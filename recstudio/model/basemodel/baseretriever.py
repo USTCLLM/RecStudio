@@ -137,7 +137,7 @@ class BaseRetriever(Recommender):
             self.item_vector = item_vector
 
         if self.use_index:
-            self.ann_index = self.build_ann_index()
+            self.ann_index = self.build_index()
 
     def forward(
             self,
@@ -369,7 +369,32 @@ class BaseRetriever(Recommender):
             return sampled_result, None
 
     def build_index(self):
-        raise NotImplementedError("build_index  for ranker not implemented.")
+        import faiss
+        item_vector = self.item_vector
+        if isinstance(self.score_func, scorer.InnerProductScorer):
+            metric = faiss.METRIC_INNER_PRODUCT
+        elif isinstance(self.score_func, scorer.CosineScorer):
+            metric = faiss.METRIC_INNER_PRODUCT
+            item_vector = F.normalize(item_vector, dim=1)
+        elif isinstance(self.score_func, scorer.EuclideanScorer):
+            metric = faiss.METRIC_L2
+        else:
+            raise ValueError(f'ANN index do not support the {type(self.score_func).__name__}')
+        num_item, dim = item_vector.shape
+        if 'HNSWx' in self.config['ann']['index']:
+            ann_search = self.config['ann']['index'].replace('x', '32')
+        elif 'IVFx' in self.config['ann']['index']:
+            ann_search = self.config['ann']['index'].replace('x', str(int(4*np.sqrt(num_item))))
+        else:   # IndexPQ, IndexLSH, etc
+            ann_search = self.config['ann']['index']
+        index = faiss.index_factory(dim, ann_search, metric)
+        if 'parameter' in self.config['ann'] and self.config['ann']['parameter'] is not None:
+            for k, v in self.config['ann']['parameter'].items():
+                faiss.ParameterSpace().set_index_parameter(index, k, v)
+        if not index.is_trained:
+            index.train(item_vector.numpy())
+        index.add(item_vector.numpy())
+        return index
 
     def topk(self, batch, k, user_h=None, return_query=False):
         query = self.query_encoder(self._get_query_feat(batch))
